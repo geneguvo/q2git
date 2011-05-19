@@ -71,7 +71,7 @@ our $GIT = "/opt/local/bin/git";
 
 # absolute fs-path which will be prepended to the project path
 #our $projectroot = "/pub/scm";
-our $projectroot = "/pub/git";
+our $projectroot = "/users/git";
 
 # fs traversing limit for getting project list
 # the number is relative to the projectroot
@@ -93,15 +93,15 @@ our $home_text = "indextext.html";
 our $site_footer = "";
 
 # URI of stylesheets
-our @stylesheets = ("static/gitweb.css");
+our @stylesheets = ("/git/static/gitweb.css");
 # URI of a single stylesheet, which can be overridden in GITWEB_CONFIG.
 our $stylesheet = undef;
 # URI of GIT logo (72x27 size)
-our $logo = "static/git-logo.png";
+our $logo = "/git/static/git-logo.png";
 # URI of GIT favicon, assumed to be image/png type
-our $favicon = "static/git-favicon.png";
+our $favicon = "/git/static/git-favicon.png";
 # URI of gitweb.js (JavaScript code for gitweb)
-our $javascript = "static/gitweb.js";
+our $javascript = "/git/static/gitweb.js";
 
 # URI and label (title) of GIT logo link
 #our $logo_url = "http://www.kernel.org/pub/software/scm/git/docs/";
@@ -162,13 +162,13 @@ our @diff_opts = ('-M'); # taken from git_commit
 
 # Disables features that would allow repository owners to inject script into
 # the gitweb domain.
-our $prevent_xss = 0;
+our $prevent_xss = 1;
 
 # Path to the highlight executable to use (must be the one from
 # http://www.andre-simon.de due to assumptions about parameters and output).
 # Useful if highlight is not installed on your webserver's PATH.
 # [Default: highlight]
-our $highlight_bin = "highlight";
+our $highlight_bin = "/opt/local/bin/highlight";
 
 # information about snapshot formats that gitweb is capable of serving
 our %known_snapshot_formats = (
@@ -249,16 +249,17 @@ our %highlight_basename = (
 our %highlight_ext = (
 	# main extensions, defining name of syntax;
 	# see files in /usr/share/highlight/langDefs/ directory
-	map { $_ => $_ }
-		qw(py c cpp rb java css php sh pl js tex bib xml awk bat ini spec tcl sql make),
+	(map { $_ => $_ }
+		qw(py c cpp rb java css php sh pl js tex bib xml awk bat ini spec tcl sql make)),
 	# alternate extensions, see /etc/highlight/filetypes.conf
-	'h' => 'c',
-	map { $_ => 'sh'  } qw(bash zsh ksh),
-	map { $_ => 'cpp' } qw(cxx c++ cc),
-	map { $_ => 'php' } qw(php3 php4 php5 phps),
-	map { $_ => 'pl'  } qw(perl pm), # perhaps also 'cgi'
-	map { $_ => 'make'} qw(mak mk),
-	map { $_ => 'xml' } qw(xhtml html htm),
+	('h' => 'c'),
+	(map { $_ => 'sh'  } qw(bash zsh ksh)),
+	(map { $_ => 'cpp' } qw(cxx c++ cc)),
+	(map { $_ => 'php' } qw(php3 php4 php5 phps)),
+	(map { $_ => 'pl'  } qw(perl pm)), # perhaps also 'cgi'
+	(map { $_ => 'make'} qw(mak mk)),
+	(map { $_ => 'xml' } qw(xhtml html htm)),
+	(map { $_ => 'cpp' } qw(tpl)),
 );
 
 # You define site-wide feature defaults here; override them with
@@ -491,7 +492,7 @@ our %feature = (
 	'highlight' => {
 		'sub' => sub { feature_bool('highlight', @_) },
 		'override' => 0,
-		'default' => [0]},
+		'default' => [1]},
 
 	# Enable displaying of remote heads in the heads list
 
@@ -3055,11 +3056,11 @@ sub parse_commit_text {
 	$co{'age_string'} = age_string($age);
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime($co{'committer_epoch'});
 	if ($age > 60*60*24*7*2) {
-		$co{'age_string_date'} = sprintf "%4i-%02u-%02i", 1900 + $year, $mon+1, $mday;
+		$co{'age_string_date'} = sprintf "%4i-%02u-%02i %02u:%02u:%02u", 1900 + $year, $mon+1, $mday, $hour, $min, $sec;
 		$co{'age_string_age'} = $co{'age_string'};
 	} else {
 		$co{'age_string_date'} = $co{'age_string'};
-		$co{'age_string_age'} = sprintf "%4i-%02u-%02i", 1900 + $year, $mon+1, $mday;
+		$co{'age_string_age'} = sprintf "%4i-%02u-%02i %02u:%02u:%02u", 1900 + $year, $mon+1, $mday, $hour, $min, $sec;
 	}
 	return %co;
 }
@@ -6947,7 +6948,7 @@ sub git_search {
 				}
 				print "<td class=\"list\">".
 					$cgi->a({-href => href(action=>"blob", hash=>$co{'hash'},
-							       file_name=>"$file"),
+							       file_name=>"$file", hash_base=>$hash),
 						-class => "list"}, esc_path($file));
 				print "</td><td>\n";
 				$lastfile = $file;

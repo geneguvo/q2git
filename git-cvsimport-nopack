@@ -492,7 +492,7 @@ my $cvs = CVSconn->new($opt_d, $cvs_tree);
 
 sub pdate($) {
 	my ($d) = @_;
-	m#(\d{2,4})/(\d\d)/(\d\d)\s(\d\d):(\d\d)(?::(\d\d))?#
+	$d =~ m#(\d{2,4})/(\d\d)/(\d\d)\s(\d\d):(\d\d)(?::(\d\d))?#
 		or die "Unparseable date: $d\n";
 	my $y=$1; $y-=1900 if $y>1900;
 	return timegm($6||0,$5,$4,$3,$2-1,$y);
@@ -942,7 +942,7 @@ while (<CVS>) {
 			last;
 		}
 		commit();
-		if (($commitcount & 1023) == 0) {
+		if (($commitcount & 16383) == 0) {
 			system("git repack -a -d");
 		}
 		$state = 1;
@@ -958,16 +958,6 @@ commit() if $branch and $state != 11;
 
 unless ($opt_P) {
 	unlink($cvspsfile);
-}
-
-# The heuristic of repacking every 1024 commits can leave a
-# lot of unpacked data.  If there is more than 1MB worth of
-# not-packed objects, repack once more.
-my $line = `git-count-objects`;
-if ($line =~ /^(\d+) objects, (\d+) kilobytes$/) {
-  my ($n_objects, $kb) = ($1, $2);
-  1024 < $kb
-    and system("git repack -a -d");
 }
 
 foreach my $git_index (values %index) {

@@ -1,0 +1,262 @@
+#!/usr/bin/perl -w
+
+## Usage: quattor-cvs-to-git ROOTDIR QUATTOR-CVS [GITWEB]
+##
+## Incrementally updates quattor replica in ROOTDIR from (rsync-style)
+## path QUATTOR-CVS. Clones the CVS repository, and builds GIT clone
+## of it, updating GIT incrementally since the last update. Optionally
+## synchronises the resulting GIT repository to GITWEB, another rsync-
+## style path.
+##
+## If ROOTDIR doesn't exist yet, creates it automatically, including
+## any additional directories needed. The structure under ROOTDIR is:
+##   cvs     -- the cvs repository replica
+##   git     -- the git repository; cvs replica is kept in 'origin'
+##   ps      -- cvsps patch set imports, YYYYMMDD-HHMM.cvsps per import
+##   log     -- import logs, one YYYYMMDD-HHMM.log per import
+##   .cvsps  -- temporary directory for storing cvsps cached state
+##
+## Example:
+##
+##   quattor-cvs-to-git /build/lat/quattor \
+##      cdbserv01:/var/lib/cdb/hld/cvs     \
+##      cmsmac01:/users/quattor/git
+##
+## Note that there is no locking and imports usually take hours. Just
+## running 'cvsps' will normally take 1h30. The subsequent import will
+## take anywhere from over 24 hours for the initial import to nothing
+## if there are no changes.
+##
+## Files known to have lots of gratuituous changes are omitted from
+## the GIT repository. Currently this repository[/_]cern_cc*.tpl files
+## as they have had commits as often as once every half an hour with
+## no substantial changes in content, only auto-generator time stamp.
+## Some of these files have over 25000 revisions, and retrieving the
+## old versions is very slow. All the worst files have been deleted in
+## CVS already, so aren't of much interest anyway.
+
+BEGIN { use strict; use warnings; }
+use POSIX;
+
+my $rootdir = shift(@ARGV);
+my $cvspath = shift(@ARGV);
+my $gitweb = shift(@ARGV);
+my $now = strftime("%Y%m%d-%H%M", localtime);
+my @cmd;
+
+# Print out a log message lines, prefixing each line with current
+# time stamp. Each argument should be one line complete with \n.
+sub logme(@)
+{
+  my $timestamp = strftime("[%a %Y-%m-%d %H:%M:%S]", localtime);
+  print LOG map { "$timestamp $_" } @_;
+}
+
+# Ensure the given directories exist.
+sub mkpaths(@)
+{
+  foreach my $dir (@_)
+  {
+    next if -d $dir;
+    next if mkdir $dir;
+    my $err = $!;
+    next if -d $dir;
+    die "$dir: cannot create: $err\n";
+  }
+}
+
+# Run a command. The arguments should be the command with arguments.
+# The standard output and error of the command are redirect to LOG.
+# The command executed and the exit code are logged. Throws an error
+# if the command exits with non-zero exit code.
+sub run(@)
+{
+  logme "running: @_\n";
+
+  open(OLDOUT, ">&", \*STDOUT) || die "failed to dup stdout\n";
+  open(OLDERR, ">&", \*STDERR) || die "failed to dup stderr\n";
+  open(STDOUT, ">&", \*LOG) || die "failed to redirect stdout to log\n";
+  open(STDERR, ">&", \*LOG) || die "failed to redirect stderr to log\n";
+  my $rc = system(@_);
+  open(STDOUT, ">&", \*OLDOUT) || die "failed to restore stdout\n";
+  open(STDERR, ">&", \*OLDERR) || die "failed to restore stderr\n";
+
+  logme "$_[0] exit code $?\n";
+  die "$_[0]: cannot run\n" if $rc == -1;
+  die "$_[0]: died with signal @{[$rc & 127]}\n" if $rc & 127;
+  die "$_[0]: exited with error @{[$rc >> 8]}\n" if $rc;
+  die "$_[0]: exited with error @{[$rc >> 8]}\n" if $rc;
+  return 0;
+}
+
+# Run a command attached to a pipe. The first argument should be the
+# PID of the child process as created by 'open(FH, "-|")'. The routine
+# first checks the forking succeeded, and handles any error correctly.
+# The remaining arguments should be the command and its arguments.
+# The standard error of the command is redirected to LOG.
+sub popen($$@)
+{
+  my $pid = shift(@_);
+  my $env = shift(@_);
+  return if defined $pid && $pid > 0;
+  die "cannot fork: $!\n" if not defined $pid;
+  $ENV{$_} = $$env{$_} for keys %$env;
+  open(STDERR, ">&", \*LOG) || die "failed to redirect stderr to log\n";
+  exec(@_) || die "$_[0]: cannot run: $!\n";
+}
+
+# Create initial directories if they don't exist.
+mkpaths($rootdir, "$rootdir/.cvsps", "$rootdir/cvs",
+        "$rootdir/git", "$rootdir/ps", "$rootdir/log");
+chdir("$rootdir/git") || die "$rootdir/git: $!\n";
+
+# Open the log file in unbuffered mode.
+my $import_log = "$rootdir/log/$now.log";
+open(LOG, "> $import_log") || die "$import_log: $!\n";
+select LOG; $| = 1; select STDOUT;
+
+# Make sure ~/.cvsps points to our local cache area, not user's home
+# directory, as the data file in there can get extremely large, and
+# we don't want that to be stored on AFS.
+my $my_cvsps = "$ENV{HOME}/.cvsps";
+my $my_cvsps_is = readlink($my_cvsps);
+if (! defined $my_cvsps_is || $my_cvsps_is ne "$rootdir/.cvsps")
+{
+  ! -e $my_cvsps || unlink($my_cvsps) || die "$my_cvsps: $!\n";
+  symlink("$rootdir/.cvsps", $my_cvsps) || die "$my_cvsps: $!\n";
+  logme "symlinking $my_cvsps to $rootdir/.cvsps\n";
+}
+
+# Find the date of the last import if this repository is initialised.
+# We use it to give cvsps -d option to skip all earlier change sets.
+# We get the last import date from date of git's refs/heads/origin.
+my @cvsps_opts;
+if (-d "$rootdir/git/.git")
+{
+  my %heads;
+  my $fmt = '($ref, $author) = (%(refname), %(author));';
+  open(GIT, "git-for-each-ref --perl --format='$fmt' refs/heads |") || die;
+  while (<GIT>)
+  {
+    logme $_;
+    my ($ref, $author);
+    eval($_) || die "cannot eval refs list: $@\n";
+    my ($head) = ($ref =~ m|^refs/heads/(.*)|);
+    $author =~ /^.*\s(\d+)\s[-+]\d{4}$/;
+    push(@cvsps_opts, "-d", strftime("%Y/%m/%d %H:%M:%S", gmtime(int($1))))
+      if $head eq 'origin';
+  }
+  close(GIT);
+}
+
+if (! @cvsps_opts)
+{
+  # If we are performing the initial import, do only what we can
+  # accomplish in about 20 hours. This makes sure it fits into one
+  # kerberos token running time, so it can run unattended - if AFS
+  # token expires, git gets very slow trying to access ~/.gitconfig.
+  # The next run will pick up where this one leaves off.
+  push(@cvsps_opts,
+       "-d", "2000/01/01 00:00:00",
+       "-d", "2009/06/01 00:00:00");
+}
+
+# Synchronise CVS repository. Attempt this a few times, rsync may
+# lose files which will cause it to exit with non-zero exit code.
+# Eliminate already at this stage files we don't want in GIT.
+foreach my $try (1 .. 5)
+{
+  eval { run("rsync", "-a", "--delete", "--delete-excluded",
+             "--exclude", "**/repository/cern_cc_*",
+             "--exclude", "repository_cern_cc_*",
+             "$cvspath/", "$rootdir/cvs/") };
+  last if ! $@;
+  die $@ if $@ and $try == 5;
+}
+
+# Generate patch set since last update. Tell cvsps to ignore it's
+# previous cache and to rebuild it; this is at least three times as
+# fast as using the cache.
+my $num_patch_sets = 0;
+my $patch_set_id = 0;
+my $patch_set = "";
+my @patch_set_files;
+my $new_import = "$rootdir/ps/$now.cvsps";
+@cmd = ("cvsps", "--norc", "--cvs-direct", "-x", "-A",
+        @cvsps_opts, "--root", "$rootdir/cvs", "checkout");
+open(NEWPS, "> $new_import") || die "$new_import: $!\n";
+logme "executing: TZ=UTC @cmd\n";
+popen(open(CVSPS, "-|"), { TZ => "UTC" }, @cmd);
+while (<CVSPS>)
+{
+  if (/^-----------/)
+  {
+    if ($patch_set && @patch_set_files)
+    {
+      ++$num_patch_sets;
+      print NEWPS $patch_set;
+    }
+    $patch_set = "";
+    @patch_set_files = ();
+    $patch_set_id = 0;
+  };
+  push(@patch_set_files, $_) if /^\t/;
+  $patch_set_id = int($1) if /^PatchSet (\d+)/;
+  $patch_set .= $_;
+}
+
+if ($patch_set && @patch_set_files)
+{
+  ++$num_patch_sets;
+  print NEWPS $patch_set;
+}
+
+close(NEWPS) || die "$new_import: $!\n";
+close(CVSPS) || print "WARNING: cvsps exited with $?\n";
+logme "$num_patch_sets new patch sets in $new_import\n";
+
+# Import.
+if (! -s $new_import)
+{
+  # Nothing to import, remove this patch set.
+  logme "nothing to import.\n";
+  unlink($new_import) || die "$new_import: $!\n";
+}
+else
+{
+  # Run import on this patch set. Use variant of cvsimport
+  # command with source modified not to call 'repack'. This
+  # makes the import dramatically faster; we repack at end.
+  run("du", "-scm", ".git") if -d ".git";
+  @cmd = ("git", "cvsimport-nopack", "-v", "-C", "$rootdir/git",
+          "-P", $new_import, "-d", "$rootdir/cvs",
+          "-i", "-k", "-o", "origin", "checkout");
+  logme "executing: @cmd\n";
+  popen(open(IMPORT, "-|"), {}, @cmd);
+  logme $_ while <IMPORT>;
+  close(IMPORT) || print "WARNING: git cvsimport exited with $?\n";
+
+  # Compact the git repository.
+  run("du", "-scm", ".git");
+  run("git", "reflog", "expire", "--expire=1.minute", "refs/heads/origin");
+  run("git", "repack", "-a", "-d", "-f", "--window=15");
+  run("git", "pack-refs");
+  run("git", "gc");
+  run("du", "-scm", ".git");
+}
+
+# Make sure there is .git/description.
+if (! -f ".git/description")
+{
+  open(D, "> .git/description")
+    || die "$rootdir/git/.git/description: $!\n";
+  print D "CDB CVS minus repository/cern_cc_*\n";
+  close(D) || die "$rootdir/git/.git/description: $!\n";
+}
+
+# Synchronise to gitweb host.
+run("rsync", "-a", "--delete", "$rootdir/git/", "$gitweb/") if $gitweb;
+
+# Done.
+close(LOG) || print "WARNING: failed to save $import_log: $!\n";
+exit 0;
