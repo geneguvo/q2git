@@ -228,7 +228,7 @@ else
   # Run import on this patch set. Use variant of cvsimport
   # command with source modified not to call 'repack'. This
   # makes the import dramatically faster; we repack at end.
-  run("du", "-scm", ".git") if -d ".git";
+  run(qw(du -scm .git)) if -d ".git";
   @cmd = ("git", "cvsimport-nopack", "-v", "-C", "$rootdir/git",
           "-P", $new_import, "-d", "$rootdir/cvs",
           "-i", "-k", "-o", "origin", "checkout");
@@ -237,19 +237,35 @@ else
   logme $_ while <IMPORT>;
   close(IMPORT) || print "WARNING: git cvsimport exited with $?\n";
 
-  # Compact the git repository.
-  run("du", "-scm", ".git");
-  run("git", "reflog", "expire", "--expire=1.minute", "refs/heads/origin");
-  run("git", "repack", "-a", "-d", "-f", "--window=15");
-  run("git", "pack-refs");
-  run("git", "gc");
-  run("du", "-scm", ".git");
+  # Configure repository settings.
+  run(qw(git config core.compression 6));
+  run(qw(git config gc.packrefs true));
+  run(qw(git config gc.pruneexpire now));
+  run(qw(git config gc.reflogexpire 1.minute));
+  run(qw(git config gc.reflogexpireunreachable 1.minute));
+  run(qw(git config pack.window 15));
+
+  # Maybe compact the git repository: repack if more than 250 MB loose.
+  my $loose = 0;
+  run(qw(du -scm .git));
+
+  logme "git object counts:\n";
+  popen(open(COUNT, "-|"), {}, qw(git count-objects -v));
+  do { logme $_; $loose = int($1) if /^size: (\d+)/ } while <COUNT>;
+  close(COUNT) || print "WARNING: git count-objects exited with $?\n";
+
+  if ($loose > 250_000)
+  {
+    run(qw(git gc --prune));
+    run(qw(git count-objects -v));
+    run(qw(du -scm .git));
+  }
 }
 
 # Make sure there is .git/description.
 if (! -f ".git/description")
 {
-  open(D, "> .git/description")
+  open(D, ">", ".git/description")
     || die "$rootdir/git/.git/description: $!\n";
   print D "CDB CVS minus repository/cern_cc_*\n";
   close(D) || die "$rootdir/git/.git/description: $!\n";
