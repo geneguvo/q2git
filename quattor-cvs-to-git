@@ -168,6 +168,7 @@ foreach my $try (1 .. 5)
 {
   eval { run("rsync", "-a", "--delete", "--delete-excluded",
              "--exclude", "**/repository/cern_cc_*",
+             "--exclude", "**/repository/Attic/cern_cc_*",
              "--exclude", "repository_cern_cc_*",
              "$cvspath/", "$rootdir/cvs/") };
   last if ! $@;
