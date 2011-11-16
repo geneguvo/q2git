@@ -1024,6 +1024,9 @@ while (<CVS>) {
 			last;
 		}
 		commit();
+		if (($commitcount & 1023) == 0) {
+			system(qw(git pack-refs));
+		}
 		if (($commitcount & 16383) == 0) {
 			system(qw(git repack -a -d));
 		}
