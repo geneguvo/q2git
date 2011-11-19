@@ -105,6 +105,22 @@ sub popen($$@)
   exec(@_) || die "$_[0]: cannot run: $!\n";
 }
 
+# Given a directory and file pattern, archive files into zip bundles of
+# about 500 MB. Pick the latest zip archive that is <500 MB in size. If
+# there is none, start a new archive, with today's time stamp. Files
+# matching the pattern and not modified for 24 hours are archived away.
+sub archive($$)
+{
+  my $dir = shift(@_);
+  my $pattern = shift(@_);
+  my @files = sort { -M $b <=> -M $a } grep(-M $_ > 1, <$dir/$pattern>);
+  return if ! @files;
+
+  my @zips = sort { $b cmp $a } grep(-s $_ < 500_000_000, <$dir/*.zip>);
+  my $zip = (@zips ? $zips[0] : "$dir/@{[strftime('%Y%m%d-%H%M', localtime)]}.zip");
+  run("zip", "-9Tmojq", $zip, @files);
+}
+
 # Create initial directories if they don't exist.
 mkpaths($rootdir, "$rootdir/.cvsps", "$rootdir/cvs",
         "$rootdir/git", "$rootdir/ps", "$rootdir/log");
@@ -273,6 +289,10 @@ if (! -f ".git/description")
 
 # Synchronise to gitweb host.
 run("rsync", "-a", "--delete", "$rootdir/git/", "$gitweb/") if $gitweb;
+
+# Archive away old logs and patch sets.
+archive("$rootdir/log", "*.log");
+archive("$rootdir/ps", "*.cvsps");
 
 # Done.
 close(LOG) || print "WARNING: failed to save $import_log: $!\n";
