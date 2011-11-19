@@ -267,7 +267,7 @@ else
 
   logme "git object counts:\n";
   popen(open(COUNT, "-|"), {}, qw(git count-objects -v));
-  do { logme $_; $loose = int($1) if /^size: (\d+)/ } while <COUNT>;
+  while (<COUNT>) { logme $_; $loose = int($1) if /^size: (\d+)/ }
   close(COUNT) || print "WARNING: git count-objects exited with $?\n";
 
   if ($loose > 250_000)
